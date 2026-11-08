@@ -39,7 +39,7 @@ La continuación antigua dependía de un listener de `MainViewModel`, esperaba `
 
 ## Persistencia y optimizaciones aplicadas
 
-`QueuePersistence` mueve restauración y guardado al servicio y mantiene las claves existentes de SharedPreferences. Un canal conflado y un único escritor IO evitan escritores UI/servicio en competencia; reutiliza JSON de metadatos y solo recodifica cuando cambia la lista de MediaItems. Guarda progreso cada diez segundos cuando reproduce, y eventos del reproductor. Restaura índice, posición, Shuffle, Repeat y marcas de precarga, en pausa. Una revisión impide que una restauración tardía sustituya una cola recién recibida. Los eventos iniciales sin cola no sobrescriben la cola guardada antes de leerla.
+`QueuePersistence` mueve restauración y guardado al servicio y mantiene las claves existentes de SharedPreferences. Un canal conflado y un único escritor IO evitan escritores UI/servicio en competencia; reutiliza JSON de metadatos y solo recodifica cuando cambia la lista de MediaItems. Guarda progreso cada diez segundos cuando reproduce, y eventos del reproductor. Restaura índice, posición, Shuffle, Repeat y marcas de precarga, en pausa. Una revisión impide que una restauración tardía sustituya una cola recién recibida, incluso cuando MediaSession aún está resolviendo la petición y no hay timeline nuevo. Los eventos iniciales sin cola no sobrescriben la cola guardada antes de leerla.
 
 `MainViewModel` reutiliza la cola decodificada salvo cambios de timeline y evita construir el estado global de reproducción cada 500 ms si no han cambiado calidad/duración. El progreso sigue en su StateFlow separado. Se cancela la carga anterior de artwork del widget al cambiar de pista. No se introdujeron dependencias.
 

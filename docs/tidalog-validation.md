@@ -14,7 +14,7 @@ JDK Temurin 21.0.13, Gradle wrapper 8.13, Android SDK platform 36 y build-tools 
 | `:app:testDebugUnitTest` | 21 tests, 0 fallos, 0 errores, 0 omitidos |
 | `:app:lintDebug` | Correcto: 0 errores; reporte con 68 warnings y 1 hint |
 | `:app:assembleDebug` | Correcto; APK instalable con firma debug verificada |
-| `:app:assembleDebugAndroidTest` | Correcto; compilan las pruebas existentes y 10 nuevas de integración |
+| `:app:assembleDebugAndroidTest` | Correcto; compilan las pruebas existentes y 11 nuevas de integración |
 | Scripts Python de release | 14 tests correctos |
 | `scripts/check_strings.py` | Correcto |
 | `git diff --check` | Correcto |
@@ -31,9 +31,9 @@ JDK Temurin 21.0.13, Gradle wrapper 8.13, Android SDK platform 36 y build-tools 
   :app:assembleDebug :app:assembleDebugAndroidTest
 ```
 
-Resultado: **BUILD SUCCESSFUL**, 92 tareas, 15 ejecutadas y 77 up-to-date, 58 segundos. Las tareas reutilizadas se habían ejecutado satisfactoriamente en las pasadas anteriores; no se eliminaron ni omitieron tests para obtener el resultado. Los XML de resultados confirman las cifras anteriores.
+Resultado: **BUILD SUCCESSFUL**, 92 tareas, 20 ejecutadas y 72 up-to-date, 33 segundos. Las tareas reutilizadas se habían ejecutado satisfactoriamente en las pasadas anteriores; no se eliminaron ni omitieron tests para obtener el resultado. Los XML de resultados confirman las cifras anteriores.
 
-Se añadieron **20 tests JVM**: 18 de AutoRadio y 2 de TidalClient (endpoint y cancelación); se preservaron los demás. Los 10 tests nuevos con ExoPlayer real están en `PlaybackRadioIntegrationTest`; su compilación no constituye una ejecución. También se ampliaron comprobaciones de precarga y FLAC en `PlaybackSoakLiveTest`.
+Se añadieron **20 tests JVM**: 18 de AutoRadio y 2 de TidalClient (endpoint y cancelación); se preservaron los demás. Los 11 tests nuevos con ExoPlayer real están en `PlaybackRadioIntegrationTest`; su compilación no constituye una ejecución. Incluyen la carrera entre restauración y una petición asíncrona de cola todavía sin timeline. También se ampliaron comprobaciones de precarga y FLAC en `PlaybackSoakLiveTest`.
 
 ## Intento de pruebas instrumentadas
 
@@ -61,7 +61,7 @@ Ruta: `app/build/outputs/apk/debug/app-debug.apk`.
 SHA-256:
 
 ```text
-8806322177c22947da86bf742e24c4ad3446281baf3e6c2eaaa5ecc2e70a9f87
+1ad50d5f578dd59baf7039fb56d3b8d3450d7914deb5a6abd38e828174f42587
 ```
 
 Identidad comprobada con `aapt dump badging`: `io.github.yyan115.opentune.debug`, versionName 0.7.0, versionCode 7000, minSdk 26, target/compileSdk 36. No se modificaron appId/nombre/versión ni se usaron claves del autor original. Un debug usa una clave local de desarrollo, que no se incluye en Git ni sirve como identidad estable para una release.

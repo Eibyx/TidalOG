@@ -117,6 +117,21 @@ class PlaybackRadioIntegrationTest {
         } finally { prefs.edit().clear().commit() }
     }
 
+    @Test fun asynchronousQueueRequestInvalidatesPendingRestoration() {
+        val prefs = instrumentation.targetContext.getSharedPreferences("radio-persistence-pending-test", 0)
+        prefs.edit().clear().putString("queue", JsonCodec.encodeTracks(listOf(track("old")))).commit()
+        try {
+            val persistence = main {
+                io.github.yyan115.opentune.playback.QueuePersistence(player, prefs, scope, ::item).also {
+                    // The new voice/controller request is still resolving; its playlist has not been applied yet.
+                    it.newQueue()
+                }
+            }
+            kotlinx.coroutines.runBlocking { persistence.restoration.join() }
+            main { assertEquals("A pending request must not resurrect the saved queue", 0, player.mediaItemCount) }
+        } finally { prefs.edit().clear().commit() }
+    }
+
     @Test fun manualAppendPrecedesPrefetchedRadioAndKeepsItsOrder() {
         start(); nearEnd(); until { player.mediaItemCount == 3 }
         main { player.addMediaItems(listOf(item(track("manual-a")), item(track("manual-b")))) }

@@ -71,6 +71,7 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var app: OpenTuneApp
     private lateinit var player: ExoPlayer
     private lateinit var radio: PlaybackRadio
+    private lateinit var persistence: QueuePersistence
     private var equalizer: Equalizer? = null
     private var equalizerSession = C.AUDIO_SESSION_ID_UNSET
     private var sleepJob: Job? = null
@@ -157,7 +158,7 @@ class PlaybackService : MediaLibraryService() {
                 if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM && sleepAtTrackEnd) clearSleepTimer()
             }
         })
-        QueuePersistence(player, getSharedPreferences("playback", MODE_PRIVATE), scope, app.sources::unresolved)
+        persistence = QueuePersistence(player, getSharedPreferences("playback", MODE_PRIVATE), scope, app.sources::unresolved)
         app.sources.onGains = { id -> Handler(Looper.getMainLooper()).post { if (player.currentMediaItem?.mediaId == id) applyNormalization() } }
         scope.launch { app.settings.state.collect { radio.settingsChanged(); AudioSpectrum.enabled = it.visualizer; applyNormalization(); applyEqualizer(); applyBitPerfect() } }
         scope.launch { runCatching { app.scrobbler.flush() } }
@@ -217,6 +218,7 @@ class PlaybackService : MediaLibraryService() {
 
             override fun onSetMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
                 radio.newQueue()
+                persistence.newQueue()
                 return super.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)
             }
 
@@ -396,7 +398,7 @@ class PlaybackService : MediaLibraryService() {
         radio.release()
         if (Build.VERSION.SDK_INT >= 23) audioManager.unregisterAudioDeviceCallback(deviceCallback)
         runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
-        QueuePersistence(player, getSharedPreferences("playback", MODE_PRIVATE), scope, app.sources::unresolved)
+        persistence = QueuePersistence(player, getSharedPreferences("playback", MODE_PRIVATE), scope, app.sources::unresolved)
         app.sources.onGains = null
         WidgetState.write(this, null); NowPlayingWidget.refresh(this)
         runCatching { equalizer?.release() }

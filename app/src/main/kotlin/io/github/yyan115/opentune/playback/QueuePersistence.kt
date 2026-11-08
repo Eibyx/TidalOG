@@ -9,6 +9,7 @@ import io.github.yyan115.opentune.core.JsonCodec
 import io.github.yyan115.opentune.core.Track
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -26,6 +27,7 @@ internal class QueuePersistence(
     private val saves = Channel<Saved>(Channel.CONFLATED)
     private var revision = 0L
     private var restoring = true
+    val restoration: Job
 
     init {
         player.addListener(this)
@@ -44,7 +46,7 @@ internal class QueuePersistence(
                     .putBoolean("shuffle", save.shuffle).putInt("repeat", save.repeat).apply()
             }
         }
-        scope.launch {
+        restoration = scope.launch {
             val before = revision
             val restored = withContext(Dispatchers.IO) {
                 preferences.getString("queue", null)?.let { runCatching { JsonCodec.decodeTracks(it) }.getOrNull() }.orEmpty()
@@ -66,6 +68,9 @@ internal class QueuePersistence(
         }
         scope.launch { while (true) { delay(10_000); if (player.isPlaying) save() } }
     }
+
+    /** A controller can be resolving a new queue before the player has any timeline to observe. */
+    fun newQueue() { revision++ }
 
     override fun onEvents(player: Player, events: Player.Events) {
         if (events.contains(Player.EVENT_TIMELINE_CHANGED)) revision++
