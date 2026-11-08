@@ -338,6 +338,29 @@ class TidalClientTest {
         val remove = server.takeRequest(); assertEquals("/v2/my-collection/playlists/folders/remove", remove.requestUrl!!.encodedPath); assertEquals("trn:folder:f9", remove.requestUrl!!.queryParameter("trns"))
     }
 
+    @Test fun radioUsesTidalEndpointAndNeverSearch() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"items":[{"id":43,"title":"Related"}]}"""))
+        assertEquals("43", client.trackRadio("42").single().id)
+        val request = server.takeRequest()
+        assertEquals("/v1/tracks/42/radio", request.requestUrl!!.encodedPath)
+        assertEquals("100", request.requestUrl!!.queryParameter("limit"))
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test fun cancellingRadioCancelsItsHttpCall() = runBlocking {
+        val cancelled = CountDownLatch(1)
+        val http = okhttp3.OkHttpClient.Builder().eventListener(object : okhttp3.EventListener() {
+            override fun canceled(call: okhttp3.Call) { cancelled.countDown() }
+        }).build()
+        val cancellable = TidalClient({ ClientIdentity("client", "secret") }, store, http, apiBase = server.url("/v1/").toString())
+        server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE))
+        val pending = async(Dispatchers.IO) { cancellable.trackRadio("42") }
+        assertNotNull(server.takeRequest(5, TimeUnit.SECONDS))
+        pending.cancel()
+        assertTrue("Cancellation did not close the radio call", cancelled.await(5, TimeUnit.SECONDS))
+        pending.join()
+    }
+
     private class MemoryStore(var value: Session?) : SessionStore {
         override fun read() = value
         override fun write(session: Session) { value = session }

@@ -98,6 +98,7 @@ class PlaybackSoakLiveTest {
         onMain { controller.release() }
         assertTrue("Playback did not start within 5 s.\n$report", firstAudio in 0..5_000)
         assertTrue("Playback stalled $stalls times.\n$report", stalls == 0)
+        assertTrue("Selected lossless quality was lost.\n$report", quality.contains("FLAC", ignoreCase = true))
         assertTrue("The player buffered only ${maxAhead / 1000} s ahead.\n$report", maxAhead >= 45_000)
     }
 
@@ -151,9 +152,13 @@ class PlaybackSoakLiveTest {
         val deadline = System.currentTimeMillis() + 60_000
         while (System.currentTimeMillis() < deadline && !(model.state.value.playback.playing && model.state.value.playback.duration > 0)) Thread.sleep(300)
         assertTrue("The track started", model.state.value.playback.playing)
-        compose.runOnIdle { model.seek(model.state.value.playback.duration - 4_000) }
+        compose.runOnIdle { model.seek(model.state.value.playback.duration - 24_000) }
+        val preloadDeadline = System.currentTimeMillis() + 15_000
+        while (System.currentTimeMillis() < preloadDeadline && model.state.value.playback.queue.size == 1) Thread.sleep(200)
+        assertTrue("Radio was prefetched before the selected track ended", model.state.value.playback.queue.size > 1 && model.state.value.playback.track?.id == track.id)
+        compose.runOnIdle { model.seek(model.state.value.playback.duration - 1_000) }
         val end = System.currentTimeMillis() + 60_000
-        while (System.currentTimeMillis() < end && !(model.state.value.playback.queue.size > 1 && model.state.value.playback.playing)) Thread.sleep(400)
+        while (System.currentTimeMillis() < end && !(model.state.value.playback.track?.id != track.id && model.state.value.playback.playing)) Thread.sleep(400)
         val queue = model.state.value.playback.queue
         assertTrue("Autoplay added tracks after the last one (queue of ${queue.size})", queue.size > 1)
         assertTrue("The music kept playing", model.state.value.playback.playing)

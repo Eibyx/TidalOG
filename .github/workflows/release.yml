@@ -22,7 +22,7 @@ jobs:
   release:
     name: Build, sign and publish
     needs: check
-    if: github.ref == 'refs/heads/main' && !github.event.repository.fork
+    if: github.ref == 'refs/heads/main' && github.repository == 'Eibyx/TidalOG' && vars.TIDALOG_RELEASE_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -37,6 +37,16 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Require TidalOG signing configuration
+        env:
+          CERTIFICATE_SHA256: ${{ vars.RELEASE_CERTIFICATE_SHA256 }}
+          KEY_ALIAS: ${{ vars.RELEASE_KEY_ALIAS }}
+        run: |
+          test -n "$KEY_ALIAS"
+          if ! [[ "$CERTIFICATE_SHA256" =~ ^[[:xdigit:]]{64}$ ]]; then
+            echo "Configure the fork owner's RELEASE_CERTIFICATE_SHA256 and RELEASE_KEY_ALIAS before enabling releases." >&2
+            exit 1
+          fi
       - name: Prepare version and changelog
         run: |
           if git rev-parse --quiet --verify "refs/tags/v$VERSION" > /dev/null; then
@@ -67,19 +77,21 @@ jobs:
         env:
           OPENTUNE_KEYSTORE: ${{ runner.temp }}/opentune-release.p12
           OPENTUNE_STORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
-          OPENTUNE_KEY_ALIAS: opentune
+          OPENTUNE_KEY_ALIAS: ${{ vars.RELEASE_KEY_ALIAS }}
           OPENTUNE_KEY_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
         run: ./gradlew --no-daemon :app:assembleRelease
       - name: Verify signature and prepare files
+        env:
+          RELEASE_CERTIFICATE_SHA256: ${{ vars.RELEASE_CERTIFICATE_SHA256 }}
         run: |
           mkdir dist
-          cp app/build/outputs/apk/release/app-release.apk "dist/opentune-$VERSION.apk"
+          cp app/build/outputs/apk/release/app-release.apk "dist/tidalog-$VERSION.apk"
           apksigner="$ANDROID_HOME/build-tools/35.0.0/apksigner"
-          "$apksigner" verify --verbose --print-certs "dist/opentune-$VERSION.apk" | tee "$RUNNER_TEMP/certs.txt"
+          "$apksigner" verify --verbose --print-certs "dist/tidalog-$VERSION.apk" | tee "$RUNNER_TEMP/certs.txt"
           actual=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/certs.txt")
-          expected=$(tr -d '[:space:]' < .github/signing-certificate.sha256)
+          expected=$(printf '%s' "$RELEASE_CERTIFICATE_SHA256" | tr '[:upper:]' '[:lower:]')
           if [ "$actual" != "$expected" ]; then
-            echo "The APK is signed with a different certificate than .github/signing-certificate.sha256." >&2
+            echo "The APK does not match the configured TidalOG signing certificate." >&2
             exit 1
           fi
           cd dist
@@ -94,14 +106,14 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add VERSION CHANGELOG.md fastlane
           git commit -m "Release $VERSION"
-          git tag -a "v$VERSION" -m "OpenTune $VERSION"
+          git tag -a "v$VERSION" -m "TidalOG $VERSION"
           header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 --wrap=0)"
           git -c "http.https://github.com/.extraheader=$header" push origin HEAD:refs/heads/main "refs/tags/v$VERSION"
       - name: Publish release
         run: |
           flags=()
           case "$VERSION" in 0.*) flags+=(--prerelease) ;; esac
-          gh release create "v$VERSION" dist/* --verify-tag --title "OpenTune $VERSION" \
+          gh release create "v$VERSION" dist/* --verify-tag --title "TidalOG $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"
       - name: Remove restored signing key
         if: always()

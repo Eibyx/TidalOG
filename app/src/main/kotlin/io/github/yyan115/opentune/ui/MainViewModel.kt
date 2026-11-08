@@ -107,6 +107,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             override fun onExtrasChanged(controller: MediaController, extras: android.os.Bundle) { updateSleepTimer(extras) }
         }).buildAsync()
     private var loginJob: Job? = null
+    private var playbackGeneration = 0L
     private var detailJob: Job? = null
     private var syncJob: Job? = null
     private var lyricsJob: Job? = null
@@ -134,8 +135,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 controller = player
                 player.addListener(object : Player.Listener {
                     override fun onEvents(player: Player, events: Player.Events) {
-                        updatePlayback(); persistQueue()
-                        if (events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED) && player.playbackState == Player.STATE_ENDED) continueWithSimilarMusic(player)
+                        updatePlayback(events.contains(Player.EVENT_TIMELINE_CHANGED))
                     }
                     override fun onPlayerError(error: PlaybackException) {
                         val cause = generateSequence<Throwable>(error) { it.cause }.last()
@@ -147,8 +147,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         })) }
                     }
                 })
-                restoreQueue()
-                updatePlayback()
+                ui.update { it.copy(playback = it.playback.copy(source = preferences.getString("source", "").orEmpty())) }
+                updatePlayback(rebuildQueue = true)
                 updateSleepTimer(player.sessionExtras)
             } catch (_: Exception) { notify(app.getString(R.string.notify_service_failed)) }
         }, ContextCompat.getMainExecutor(application))
@@ -157,13 +157,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 delay(500)
                 controller?.let { player ->
                     clock.value = player.currentPosition.coerceAtLeast(0)
-                    ui.update { it.copy(playback = it.playback.copy(
-                        quality = it.playback.track?.let { track -> app.sources.quality(track.id) ?: track.quality }.orEmpty(),
-                        duration = player.duration.takeIf { d -> d > 0 } ?: it.playback.track?.durationMs ?: 0)) }
+                    val playback = ui.value.playback
+                    val quality = playback.track?.let { track -> app.sources.quality(track.id) ?: track.quality }.orEmpty()
+                    val duration = player.duration.takeIf { d -> d > 0 } ?: playback.track?.durationMs ?: 0
+                    if (quality != playback.quality || duration != playback.duration) ui.update {
+                        it.copy(playback = it.playback.copy(quality = quality, duration = duration))
+                    }
                 }
             }
         }
-        viewModelScope.launch { while (true) { delay(10_000); persistQueue() } }
         // A scan stores a file after a file. The lists refresh once the changes pause, not after each one.
         viewModelScope.launch { app.library.changes.collectLatest { delay(200); refreshLocal() } }
         viewModelScope.launch { app.folders.scans.collect { scans -> ui.update { it.copy(scans = scans) } } }
@@ -391,8 +393,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * Plays [tracks] from [index]. While shuffle is on, the tracks after the first one play in random order.
      * [shuffle] turns shuffle on or off first. Without it, shuffle stays as it is.
      */
-    fun play(tracks: List<Track>, index: Int = 0, source: String = "", shuffle: Boolean? = null) {
+    fun play(tracks: List<Track>, index: Int = 0, source: String = "", shuffle: Boolean? = null, radioItems: Boolean = false) {
         if (tracks.isEmpty()) return
+        playbackGeneration++
         preferences.edit().putString("source", source).apply()
         ui.update { it.copy(playback = it.playback.copy(source = source)) }
         val player = controller ?: run { notify(app.getString(R.string.notify_service_starting)); return }
@@ -402,10 +405,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val start = index.coerceIn(tracks.indices)
         // With shuffle on, the chosen track plays first and every other track is still to come, so that all of them take part.
         val queue = if (shuffled) listOf(tracks[start]) + tracks.filterIndexed { position, _ -> position != start } else tracks
-        player.setMediaItems(queue.map(app.sources::unresolved), if (shuffled) 0 else start, 0)
+        val items = queue.mapIndexed { position, track ->
+            val media = app.sources.unresolved(track)
+            if (!radioItems || position == (if (shuffled) 0 else start)) media else media.buildUpon().setMediaMetadata(media.mediaMetadata.buildUpon()
+                .setExtras(android.os.Bundle(media.mediaMetadata.extras ?: android.os.Bundle.EMPTY).apply { putBoolean(PlaybackCommands.EXTRA_RADIO, true) }).build()).build()
+        }
+        player.setMediaItems(items, if (shuffled) 0 else start, 0)
         if (shuffled) player.sendCustomCommand(PlaybackCommands.Reshuffle, android.os.Bundle.EMPTY)
         player.prepare(); player.play()
     }
+    fun playSearchTrack(track: Track, source: String = "") = play(io.github.yyan115.opentune.core.SearchPlayback.selected(track), source = source)
+
     fun togglePlay() {
         controller?.let { player ->
             if (player.isPlaying) player.pause()
@@ -433,6 +443,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleShuffle() { controller?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled } }
     fun toggleRepeat() { controller?.let { it.repeatMode = (it.repeatMode + 1) % 3 } }
     fun queue(track: Track, next: Boolean = false) {
+        playbackGeneration++
         val player = controller ?: return
         if (player.mediaItemCount == 0) { play(listOf(track)); return }
         player.addMediaItem(if (next) player.currentMediaItemIndex + 1 else player.mediaItemCount, app.sources.unresolved(track))
@@ -440,10 +451,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun removeQueue(index: Int) { controller?.removeMediaItem(index) }
     fun moveQueue(from: Int, to: Int) { controller?.let { if (to in 0 until it.mediaItemCount) it.moveMediaItem(from, to) } }
-    fun jumpTo(index: Int) { controller?.let { it.seekToDefaultPosition(index); it.play() } }
-    fun clearQueue() { controller?.clearMediaItems() }
+    fun jumpTo(index: Int) { playbackGeneration++; controller?.let { it.seekToDefaultPosition(index); it.play() } }
+    fun clearQueue() { playbackGeneration++; controller?.clearMediaItems() }
     /** Stops playback and empties the queue, which hides the mini player. */
-    fun stopPlayback() { controller?.let { it.stop(); it.clearMediaItems() } }
+    fun stopPlayback() { playbackGeneration++; controller?.let { it.stop(); it.clearMediaItems() } }
 
     fun favorite(track: Track) = viewModelScope.launch {
         val previous = ui.value.favorites.any { it.id == track.id }
@@ -591,16 +602,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Plays the best matches for a spoken request such as "play Nujabes". */
+    /** Plays the best match for a spoken request such as "play Nujabes". */
     fun playFromSearch(query: String) = viewModelScope.launch {
         val text = query.trim()
         if (text.isEmpty()) return@launch
+        val generation = ++playbackGeneration
         val local = withContext(Dispatchers.IO) { (app.library.localTracks() + app.library.favorites() + app.library.recent()).filter {
             it.title.contains(text, true) || it.artist.contains(text, true) || it.album.contains(text, true)
         } }
-        val remote = if (app.tidal.signedIn && !ui.value.settings.offline) runCatching { app.tidal.search(text).tracks }.getOrDefault(emptyList()) else emptyList()
-        val tracks = (local + remote).distinctBy(Track::id).take(30)
-        if (tracks.isEmpty()) notify(app.getString(R.string.notify_nothing_found, text)) else play(tracks, 0, app.getString(R.string.nav_search))
+        val remote = if (app.tidal.signedIn && !ui.value.settings.offline) try {
+            io.github.yyan115.opentune.core.SearchPlayback.best(app.tidal.search(text))
+        } catch (error: Exception) { if (error is CancellationException) throw error; null } else null
+        val best = remote ?: local.firstOrNull()
+        if (generation != playbackGeneration) return@launch
+        if (best == null) notify(app.getString(R.string.notify_nothing_found, text)) else playSearchTrack(best, app.getString(R.string.nav_search))
     }
 
     fun scrobbleToken(): String = app.sessions.scrobbleToken().orEmpty()
@@ -672,23 +687,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun dismissCredits() { ui.update { it.copy(credits = null) } }
 
-    /** When the queue ends, keeps playing music that resembles the last track, as TIDAL's own apps do. */
-    private fun continueWithSimilarMusic(player: Player) {
-        val state = ui.value
-        val last = state.playback.queue.lastOrNull() ?: return
-        if (!state.settings.autoplay || !state.signedIn || state.settings.offline || last.isFile) return
-        viewModelScope.launch {
-            val known = state.playback.queue.map(Track::id).toSet()
-            val similar = try { RepeatPolicy.dropRecent(app.tidal.trackRadio(last.id).filterNot { it.id in known }, Track::id, recentlyPlayed()) }
-            catch (error: Exception) { if (error is CancellationException) throw error; return@launch }
-            if (similar.isEmpty()) return@launch
-            val first = player.mediaItemCount
-            player.addMediaItems(similar.map(app.sources::unresolved))
-            player.seekTo(first, 0)
-            player.play()
-        }
-    }
-
     /** The ids of the tracks that played within the window of the avoid repeats setting. Empty when the setting is off. */
     private suspend fun recentlyPlayed(): Set<String> {
         val hours = ui.value.settings.avoidRepeatHours
@@ -696,12 +694,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playTrackRadio(track: Track) = accountAction {
-        val radio = RepeatPolicy.dropRecent(app.tidal.trackRadio(track.id).filterNot { it.id == track.id }, Track::id, recentlyPlayed())
-        if (radio.isEmpty()) notify(app.getString(R.string.notify_no_radio_track)) else play(listOf(track) + radio)
+        // The selected seed starts immediately; the service owns every subsequent radio request.
+        playSearchTrack(track)
+        controller?.sendCustomCommand(PlaybackCommands.StartRadio, android.os.Bundle.EMPTY)
     }
     fun playArtistRadio(artistId: String) = accountAction {
-        val radio = RepeatPolicy.dropRecent(app.tidal.artistRadio(artistId), Track::id, recentlyPlayed())
-        if (radio.isEmpty()) notify(app.getString(R.string.notify_no_radio_artist)) else play(radio)
+        val generation = ++playbackGeneration
+        val radio = RepeatPolicy.radioCandidates(app.tidal.artistRadio(artistId), emptySet(), recentlyPlayed(), 10)
+        if (generation != playbackGeneration) return@accountAction
+        if (radio.isEmpty()) notify(app.getString(R.string.notify_no_radio_artist)) else play(radio, radioItems = true)
     }
     fun playArtistTopTracks(artistId: String, shuffle: Boolean = false) = accountAction {
         val tracks = app.tidal.artistTopTracks(artistId)
@@ -799,9 +800,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } catch (error: Exception) { if (error is CancellationException) throw error; notify(app.getString(R.string.notify_playlist_not_saved)) }
     }
 
-    private fun updatePlayback() {
+    private fun updatePlayback(rebuildQueue: Boolean = false) {
         val player = controller ?: return
-        val queue = (0 until player.mediaItemCount).mapNotNull { index ->
+        val queue = if (!rebuildQueue) ui.value.playback.queue else (0 until player.mediaItemCount).mapNotNull { index ->
             player.getMediaItemAt(index).mediaMetadata.extras?.getString("track")?.let {
                 runCatching { JsonCodec.decodeTrack(JSONObject(it)) }.getOrNull()
             }
@@ -811,30 +812,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             playing = player.isPlaying, buffering = player.playbackState == Player.STATE_BUFFERING,
             shuffle = player.shuffleModeEnabled, repeat = player.repeatMode, quality = quality, nextIndex = player.nextMediaItemIndex,
             error = if (player.playerError == null) null else it.playback.error)) }
-    }
-
-    private fun persistQueue() {
-        val player = controller ?: return
-        preferences.edit().putString("queue", JsonCodec.encodeTracks(ui.value.playback.queue))
-            .putInt("index", player.currentMediaItemIndex.coerceAtLeast(0)).putLong("position", player.currentPosition.coerceAtLeast(0))
-            .putBoolean("shuffle", player.shuffleModeEnabled).putInt("repeat", player.repeatMode).apply()
-    }
-    private fun restoreQueue() {
-        if ((controller?.mediaItemCount ?: 0) > 0) return
-        val saved = preferences.getString("queue", null) ?: return
-        val tracks = runCatching { JsonCodec.decodeTracks(saved) }.getOrDefault(emptyList())
-        if (tracks.isEmpty()) return
-        val index = preferences.getInt("index", 0).coerceIn(tracks.indices)
-        val position = preferences.getLong("position", 0)
-        val shuffle = preferences.getBoolean("shuffle", false)
-        val repeat = preferences.getInt("repeat", Player.REPEAT_MODE_OFF)
-        controller?.let {
-            // The saved queue is in the order it was shuffled to, so shuffle is set before the tracks and does not shuffle them again.
-            it.shuffleModeEnabled = shuffle
-            it.setMediaItems(tracks.map(app.sources::unresolved), index, position)
-            it.repeatMode = repeat
-            ui.update { state -> state.copy(playback = state.playback.copy(source = preferences.getString("source", "").orEmpty())) }
-        }
     }
 
     fun canEdit(release: Release): Boolean = release.type == ReleaseType.PLAYLIST &&
@@ -943,6 +920,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         if (networkCallbackRegistered) runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
-        persistQueue(); MediaController.releaseFuture(controllerFuture); super.onCleared()
+        MediaController.releaseFuture(controllerFuture); super.onCleared()
     }
 }

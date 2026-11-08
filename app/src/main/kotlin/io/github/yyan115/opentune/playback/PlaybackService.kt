@@ -45,12 +45,15 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 /** Custom commands that the app sends to the playback service. */
 object PlaybackCommands {
+    val StartRadio = SessionCommand("opentune.radio", Bundle.EMPTY)
+    const val EXTRA_RADIO = "opentune.autoplay"
     val SleepTimer = SessionCommand("opentune.sleep", Bundle.EMPTY)
     /** Shuffles the tracks after the current one, as when shuffle is turned on. Sent after a new queue was set while shuffle is on. */
     val Reshuffle = SessionCommand("opentune.reshuffle", Bundle.EMPTY)
@@ -67,6 +70,7 @@ class PlaybackService : MediaLibraryService() {
     private val tree by lazy { BrowseTree(app) }
     private lateinit var app: OpenTuneApp
     private lateinit var player: ExoPlayer
+    private lateinit var radio: PlaybackRadio
     private var equalizer: Equalizer? = null
     private var equalizerSession = C.AUDIO_SESSION_ID_UNSET
     private var sleepJob: Job? = null
@@ -82,6 +86,7 @@ class PlaybackService : MediaLibraryService() {
 
     private val connectivity by lazy { getSystemService(ConnectivityManager::class.java) }
     private var retryJob: Job? = null
+    private var artworkJob: Job? = null
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             val error = player.playerError ?: return
@@ -114,6 +119,12 @@ class PlaybackService : MediaLibraryService() {
         // Shuffle reorders the queue itself, so that the queue shows what plays next and "play next" and reordering do what they say.
         // The player's own shuffle order stays the natural order.
         player.setShuffleOrder(ShuffleOrder.UnshuffledShuffleOrder(0))
+        radio = PlaybackRadio(player, scope, { app.settings.state.value },
+            { if (app.tidal.signedIn) app.tidal.accountId else "" }, app.tidal::trackRadio,
+            {
+                val hours = app.settings.state.value.avoidRepeatHours
+                if (hours > 0) app.library.playedSince(System.currentTimeMillis() - hours * 3_600_000L) else emptySet()
+            }, app.sources::unresolved, { sleepAtTrackEnd })
         player.addListener(object : Player.Listener {
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) { if (shuffleModeEnabled) shuffleUpcoming() else restoreOrder() }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -146,8 +157,9 @@ class PlaybackService : MediaLibraryService() {
                 if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM && sleepAtTrackEnd) clearSleepTimer()
             }
         })
+        QueuePersistence(player, getSharedPreferences("playback", MODE_PRIVATE), scope, app.sources::unresolved)
         app.sources.onGains = { id -> Handler(Looper.getMainLooper()).post { if (player.currentMediaItem?.mediaId == id) applyNormalization() } }
-        scope.launch { app.settings.state.collect { AudioSpectrum.enabled = it.visualizer; applyNormalization(); applyEqualizer(); applyBitPerfect() } }
+        scope.launch { app.settings.state.collect { radio.settingsChanged(); AudioSpectrum.enabled = it.visualizer; applyNormalization(); applyEqualizer(); applyBitPerfect() } }
         scope.launch { runCatching { app.scrobbler.flush() } }
         if (Build.VERSION.SDK_INT >= 23) audioManager.registerAudioDeviceCallback(deviceCallback, Handler(Looper.getMainLooper()))
         runCatching { connectivity.registerDefaultNetworkCallback(networkCallback, Handler(Looper.getMainLooper())) }
@@ -156,12 +168,13 @@ class PlaybackService : MediaLibraryService() {
         session = MediaLibrarySession.Builder(this, player, object : MediaLibrarySession.Callback {
             override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
                 if (controller.packageName != packageName && !controller.isTrusted) return MediaSession.ConnectionResult.reject()
-                val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(PlaybackCommands.SleepTimer).add(PlaybackCommands.Reshuffle).build()
+                val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(PlaybackCommands.StartRadio).add(PlaybackCommands.SleepTimer).add(PlaybackCommands.Reshuffle).build()
                 return MediaSession.ConnectionResult.AcceptedResultBuilder(session).setAvailableSessionCommands(commands).build()
             }
 
             override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, customCommand: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
                 when (customCommand.customAction) {
+                    PlaybackCommands.StartRadio.customAction -> radio.startTrackRadio()
                     PlaybackCommands.SleepTimer.customAction -> setSleepTimer(args.getInt(PlaybackCommands.ARG_MINUTES, 0), args.getBoolean(PlaybackCommands.ARG_END_OF_TRACK, false))
                     PlaybackCommands.Reshuffle.customAction -> shuffleUpcoming()
                     else -> return Futures.immediateFuture(SessionResult(androidx.media3.session.SessionError.ERROR_NOT_SUPPORTED))
@@ -202,6 +215,11 @@ class PlaybackService : MediaLibraryService() {
                 return result
             }
 
+            override fun onSetMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+                radio.newQueue()
+                return super.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)
+            }
+
             override fun onAddMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: MutableList<MediaItem>): ListenableFuture<MutableList<MediaItem>> {
                 val result = SettableFuture.create<MutableList<MediaItem>>()
                 scope.launch {
@@ -209,7 +227,7 @@ class PlaybackService : MediaLibraryService() {
                         mediaItems.flatMap { item ->
                             val query = item.requestMetadata.searchQuery
                             // A spoken request such as "play Nujabes" arrives as a search query.
-                            if (query != null && item.mediaId.isBlank() || query != null && item.localConfiguration == null && tree.item(item.mediaId) == null) runCatching { tree.search(query) }.getOrDefault(emptyList())
+                            if (query != null && item.mediaId.isBlank() || query != null && item.localConfiguration == null && tree.item(item.mediaId) == null) listOfNotNull(tree.bestSearchMatch(query))
                             else listOf(tree.resolve(item))
                         }
                     }
@@ -258,14 +276,16 @@ class PlaybackService : MediaLibraryService() {
         WidgetState.write(this, track?.let { WidgetState.Snapshot(it.title, it.artist, player.isPlaying) })
         NowPlayingWidget.refresh(this)
         if (!reloadArtwork) return
+        artworkJob?.cancel()
         val artwork = track?.artwork
-        scope.launch(Dispatchers.IO) {
+        artworkJob = scope.launch(Dispatchers.IO) {
             val bytes = artwork?.takeIf { it.startsWith("https://") || it.startsWith("file:") }?.let { address ->
                 runCatching {
                     if (address.startsWith("file:")) java.io.File(android.net.Uri.parse(address).path.orEmpty()).readBytes()
                     else app.http.newCall(okhttp3.Request.Builder().url(address).build()).execute().use { response -> if (response.isSuccessful) response.body.bytes() else null }
                 }.getOrNull()
             }
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
             runCatching { WidgetState.saveArtwork(this@PlaybackService, bytes) }
             withContext(Dispatchers.Main) { NowPlayingWidget.refresh(this@PlaybackService) }
         }
@@ -373,8 +393,10 @@ class PlaybackService : MediaLibraryService() {
     }
     override fun onDestroy() {
         finishListening()
+        radio.release()
         if (Build.VERSION.SDK_INT >= 23) audioManager.unregisterAudioDeviceCallback(deviceCallback)
         runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
+        QueuePersistence(player, getSharedPreferences("playback", MODE_PRIVATE), scope, app.sources::unresolved)
         app.sources.onGains = null
         WidgetState.write(this, null); NowPlayingWidget.refresh(this)
         runCatching { equalizer?.release() }

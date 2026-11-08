@@ -30,7 +30,7 @@ data class Settings(
     val scrobbleServer: String = "https://api.listenbrainz.org",
     /** Whether the first-launch screen was answered. */
     val welcomeDone: Boolean = false,
-    /** Keeps playing similar music from TIDAL when the queue ends. */
+    /** Preloads similar music from TIDAL near the end of a queue and keeps it playing in the service. */
     val autoplay: Boolean = true,
     /** Tracks played within this many hours come last in shuffle and are left out of radio and autoplay. Zero turns it off. */
     val avoidRepeatHours: Int = 0,
