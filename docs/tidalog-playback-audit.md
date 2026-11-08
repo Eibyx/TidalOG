@@ -79,7 +79,7 @@ Resultados reales de esta sesión se registran en `docs/tidalog-validation.md`.
 
 Identidad conservada: nombre OpenTune, applicationId release `io.github.yyan115.opentune`, debug `io.github.yyan115.opentune.debug`, versión 0.7.0, versionCode 7000, minSdk 26 (Android 8). El namespace tampoco cambia. No se asume posesión de claves del autor. Un APK release con otra firma **no actualiza** una instalación original con el mismo applicationId; requiere exportar datos/desinstalar o decidir una identidad nueva y migración. Un APK debug coexiste con release, pero puede colisionar con otro debug firmado de forma diferente.
 
-El workflow [Check](https://github.com/Eibyx/TidalOG/actions/workflows/check.yml) ya permite forks y ejecución manual. Ejecuta tests JVM, lint y builds, sube el APK debug en `build-results`, y mantiene dispositivos API 26/33/36. No se eliminaron tests existentes.
+El workflow [Check](https://github.com/Eibyx/TidalOG/actions/workflows/check.yml) ya permite forks y ejecución manual. Ejecuta tests JVM, lint y builds, sube el APK debug en el artefacto dedicado `tidalog-debug-apk` y los informes en `build-results`, y mantiene dispositivos API 26/33/36. No se eliminaron tests existentes.
 
 El workflow [Release](https://github.com/Eibyx/TidalOG/actions/workflows/release.yml) se limita a `Eibyx/TidalOG`, rama main y variable `TIDALOG_RELEASE_ENABLED=true`, después de Check. Antes de habilitarlo el propietario debe configurar:
 
@@ -88,3 +88,5 @@ El workflow [Release](https://github.com/Eibyx/TidalOG/actions/workflows/release
 - Permisos de Actions para crear tags/releases. La comprobación de firma usa esa huella, no el certificado del autor original que permanece en el historial.
 
 No se generó ni se subió una clave privada al repositorio. Un debug usa la firma de desarrollo generada localmente. No se publica automáticamente ninguna release durante esta tarea. El artefacto reproducible de Check permite revisar el APK sin habilitar publicación release. El nombre del archivo de release es `tidalog-VERSION.apk`; esto no cambia la identidad Android.
+
+El workflow [Debug APK](https://github.com/Eibyx/TidalOG/actions/workflows/debug-apk.yml) se ejecuta en cada push y manualmente una vez presente en la rama principal. Ejecuta tests JVM y lint debug antes de ensamblar; exige que exista el APK, verifica su firma y publica `tidalog-debug-apk` con `tidalog-debug.apk` y `SHA256SUMS` directamente en la raíz del ZIP. No necesita secretos de release. Check también separa su APK de los informes y falla si no encuentra el archivo. El APK de Check conserva el nombre `app-debug.apk`, también en la raíz de su ZIP.
