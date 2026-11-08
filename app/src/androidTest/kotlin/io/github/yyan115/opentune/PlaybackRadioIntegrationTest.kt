@@ -74,7 +74,7 @@ class PlaybackRadioIntegrationTest {
 
     @Test fun preloadsBeforeEndWithoutActivityAndPreservesFlacOutput() {
         start(); nearEnd()
-        until { player.mediaItemCount == 3 }
+        until { player.mediaItemCount == 3 && player.isPlaying && player.audioFormat != null }
         main {
             assertEquals(listOf("1", "2", "3"), ids())
             assertEquals("1", player.currentMediaItem?.mediaId)
@@ -89,7 +89,7 @@ class PlaybackRadioIntegrationTest {
         provider = { seed -> if (seed == "1") listOf(track("2"), track("3")) else listOf(track("4")) }
         start(); nearEnd(); until { player.mediaItemCount == 3 }
         main { player.seekTo(2, 20_000) }
-        until { ids().contains("4") }
+        until { ids().contains("4") && player.isPlaying }
         main { assertEquals(listOf("1", "2", "3", "4"), ids()); assertTrue(player.isPlaying) }
     }
 
@@ -153,8 +153,9 @@ class PlaybackRadioIntegrationTest {
             player.addMediaItem(item(track("manual")))
             settings = settings.copy(autoplay = false); radio.settingsChanged()
             assertEquals(listOf("1", "manual"), ids())
-            assertTrue(player.isPlaying)
         }
+        until { player.isPlaying }
+        main { assertEquals("1", player.currentMediaItem?.mediaId); assertTrue(player.isPlaying) }
     }
 
     @Test fun repeatModesAndShuffleArePreserved() {

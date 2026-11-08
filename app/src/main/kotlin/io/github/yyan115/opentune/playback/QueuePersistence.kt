@@ -46,8 +46,9 @@ internal class QueuePersistence(
                     .putBoolean("shuffle", save.shuffle).putInt("repeat", save.repeat).apply()
             }
         }
+        // Capture before launch: a queued Main dispatcher may start this job after newQueue().
+        val before = revision
         restoration = scope.launch {
-            val before = revision
             val restored = withContext(Dispatchers.IO) {
                 preferences.getString("queue", null)?.let { runCatching { JsonCodec.decodeTracks(it) }.getOrNull() }.orEmpty()
             }
