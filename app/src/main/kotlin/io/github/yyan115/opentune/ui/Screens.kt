@@ -102,7 +102,7 @@ fun SearchScreen(state: AppState, vm: MainViewModel, onLogin: () -> Unit, onMenu
             } }
             if (state.searching) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) }
             state.searchError?.let { error -> item { ErrorCard(error, vm::retrySearch) } }
-            val play: (Track) -> Unit = { track -> keyboard?.hide(); vm.rememberSearch(query); vm.play(songs, songs.indexOf(track), searchLabel) }
+            val play: (Track) -> Unit = { track -> keyboard?.hide(); vm.rememberSearch(query); vm.playSearchTrack(track, searchLabel) }
             when (filter) {
                 0 -> {
                     result.topRelease?.let { top -> item(key = "top-hit") {

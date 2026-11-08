@@ -7,6 +7,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -337,10 +340,7 @@ class TidalClient(
                 val request = Request.Builder().url(url).header("Authorization", "Bearer $token")
                     .header("Accept", "application/json").apply { if (match != null) header("If-None-Match", match) }.method(method,
                         body ?: if (method in setOf("POST", "PUT")) ByteArray(0).toRequestBody(null) else null).build()
-                http.newCall(request).execute().use { response ->
-                    val text = response.body.string()
-                    Triple(response.code, text, response.header("ETag"))
-                }
+                executeApiRequest(request)
             }
             currentCoroutineContext().ensureActive()
             if (generation.get() != requestGeneration) throw kotlinx.coroutines.CancellationException("Account changed")
@@ -354,6 +354,25 @@ class TidalClient(
             } catch (_: Exception) { throw ServiceException(502, "TIDAL returned an unreadable response.", Problem.UNREADABLE_RESPONSE) }
         }
         throw ServiceException(401, "Your session could not be renewed.", Problem.SESSION_NOT_RENEWED)
+    }
+
+    /** Cancelling a search/radio session also closes its HTTP call, rather than occupying IO until timeout. */
+    private suspend fun executeApiRequest(request: Request): Triple<Int, String, String?> = suspendCancellableCoroutine { continuation ->
+        val call = http.newCall(request)
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                if (continuation.isActive) continuation.resumeWithException(e)
+            }
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                try {
+                    val result = response.use { Triple(it.code, it.body.string(), it.header("ETag")) }
+                    if (continuation.isActive) continuation.resume(result)
+                } catch (error: Exception) {
+                    if (continuation.isActive) continuation.resumeWithException(error)
+                }
+            }
+        })
     }
 
     private fun form(path: String, values: Map<String, String>): JSONObject {

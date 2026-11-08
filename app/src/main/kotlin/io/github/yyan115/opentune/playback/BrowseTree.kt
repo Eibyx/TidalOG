@@ -53,6 +53,18 @@ class BrowseTree(private val app: OpenTuneApp) {
         return tracks((local + remote).distinctBy(Track::id).take(MAX_SEARCH_RESULTS))
     }
 
+    /** Voice playback selects one best remote match, falling back to one cached/local match offline. */
+    suspend fun bestSearchMatch(query: String): MediaItem? {
+        val best = if (online()) try {
+            io.github.yyan115.opentune.core.SearchPlayback.best(app.tidal.search(query))
+        } catch (error: Exception) { if (error is kotlinx.coroutines.CancellationException) throw error; null } else null
+        if (best != null) { app.library.saveAll(listOf(best)); return app.sources.unresolved(best) }
+        val local = (app.library.localTracks() + app.library.favorites() + app.library.recent()).firstOrNull {
+            it.title.contains(query, true) || it.artist.contains(query, true) || it.album.contains(query, true)
+        }
+        return local?.let(app.sources::unresolved)
+    }
+
     /** Replaces a bare request from a controller by the full queue item. */
     fun resolve(item: MediaItem): MediaItem {
         if (item.localConfiguration != null) return item
